@@ -1266,3 +1266,36 @@ class TableMetadataEntries(NamespacedMetadataEntries, frozen=True):
     @classmethod
     def namespace(cls) -> str:
         return "dagster"
+
+
+class FreshnessMetadataEntries(NamespacedMetadataEntries, frozen=True):
+    """Metadata entries that apply to asset observations and describe the freshness of the asset.
+
+    Args:
+        last_updated_timestamp (Optional[TimestampMetadataValue]): The timestamp of the last known
+            update to the asset.
+    """
+
+    last_updated_timestamp: Optional[TimestampMetadataValue] = None
+
+    @classmethod
+    def namespace(cls) -> str:
+        return "dagster"
+
+
+class FreshnessCheckMetadataEntries(NamespacedMetadataEntries, frozen=True):
+    """Metadata entries that apply to freshness check evaluations.
+
+    Args:
+        overdue_deadline_timestamp (Optional[TimestampMetadataValue]): The time by which an update
+            was expected to occur.
+        overdue_minutes (Optional[float]): If an update did not occur by the deawdline, the number
+            of minutes that elapsed between the deadline and the time the check was evaluated.
+    """
+
+    overdue_deadline_timestamp: Optional[TimestampMetadataValue] = None
+    overdue_minutes: Optional[float] = None
+
+    @classmethod
+    def namespace(cls) -> str:
+        return "dagster"
