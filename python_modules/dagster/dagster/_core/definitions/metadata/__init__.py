@@ -1183,7 +1183,7 @@ T_NamespacedMetadataEntries = TypeVar(
 )
 
 
-class NamespacedMetadataEntries(ABC, BaseModel, frozen=True):
+class NamespacedMetadataEntries(ABC, BaseModel):
     """Extend this class to define a set of metadata fields in the same namespace.
 
     Supports splatting to a dictionary that can be placed inside a metadata argument along with
@@ -1252,8 +1252,12 @@ class NamespacedMetadataEntries(ABC, BaseModel, frozen=True):
 
         return cls(**kwargs)
 
+    class Config:
+        extra = "forbid"
+        frozen = True
 
-class TableMetadataEntries(NamespacedMetadataEntries, frozen=True):
+
+class TableMetadataEntries(NamespacedMetadataEntries):
     """Metadata entries that apply to definitions, observations, or materializations of assets that
     are tables.
 
@@ -1268,7 +1272,7 @@ class TableMetadataEntries(NamespacedMetadataEntries, frozen=True):
         return "dagster"
 
 
-class FreshnessMetadataEntries(NamespacedMetadataEntries, frozen=True):
+class FreshnessMetadataEntries(NamespacedMetadataEntries):
     """Metadata entries that apply to asset observations and describe the freshness of the asset.
 
     Args:
@@ -1283,13 +1287,13 @@ class FreshnessMetadataEntries(NamespacedMetadataEntries, frozen=True):
         return "dagster"
 
 
-class FreshnessCheckMetadataEntries(NamespacedMetadataEntries, frozen=True):
+class FreshnessCheckMetadataEntries(NamespacedMetadataEntries):
     """Metadata entries that apply to freshness check evaluations.
 
     Args:
         overdue_deadline_timestamp (Optional[TimestampMetadataValue]): The time by which an update
             was expected to occur.
-        overdue_minutes (Optional[float]): If an update did not occur by the deawdline, the number
+        overdue_minutes (Optional[float]): If an update did not occur by the deadline, the number
             of minutes that elapsed between the deadline and the time the check was evaluated.
     """
 
