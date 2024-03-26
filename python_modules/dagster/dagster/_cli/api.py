@@ -41,6 +41,7 @@ from dagster._utils.interrupts import capture_interrupts, setup_interrupt_handle
 from dagster._utils.log import configure_loggers
 
 from .utils import get_instance_for_cli
+from .._core.execution.run_metrics_thread import start_run_metrics_thread, stop_run_metrics_thread
 
 
 @click.group(name="api", hidden=True)
@@ -79,6 +80,14 @@ def execute_run_command(input_json):
                 sys.exit(return_code)
 
 
+def _is_isolated_run(dagster_run: DagsterRun) -> bool:
+    return dagster_run.tags.get("dagster/isolation") != "disabled"
+
+
+def _should_start_metrics_thread(dagster_run: DagsterRun) -> bool:
+    return dagster_run.tags.get("dagster/run_metrics") == "true"
+
+
 def _execute_run_command_body(
     run_id: str,
     instance: DagsterInstance,
@@ -101,6 +110,14 @@ def _execute_run_command_body(
         dagster_run.job_code_origin,
         f"Run with id '{run_id}' does not include an origin.",
     )
+
+    start_metric_thread = _should_start_metrics_thread(dagster_run)
+    if start_metric_thread:
+        metrics_thread, metrics_thread_shutdown_event = start_run_metrics_thread(
+            dagster_run,
+        )
+    else:
+        metrics_thread, metrics_thread_shutdown_event = None, None
 
     recon_job = recon_job_from_origin(cast(JobPythonOrigin, dagster_run.job_code_origin))
 
@@ -127,6 +144,11 @@ def _execute_run_command_body(
         # relies on core_execute_run writing failures to the event log before raising
         run_worker_failed = True
     finally:
+        if metrics_thread and metrics_thread_shutdown_event:
+            stopped = stop_run_metrics_thread(metrics_thread, metrics_thread_shutdown_event)
+            if not stopped:
+                instance.report_engine_event("Metrics thread did not shutdown properly")
+
         if instance.should_start_background_run_thread:
             cancellation_thread_shutdown_event = check.not_none(cancellation_thread_shutdown_event)
             cancellation_thread = check.not_none(cancellation_thread)
@@ -197,6 +219,14 @@ def _resume_run_command_body(
         f"Run with id '{run_id}' does not include an origin.",
     )
 
+    start_metric_thread = _should_start_metrics_thread(dagster_run)
+    if start_metric_thread:
+        metrics_thread, metrics_thread_shutdown_event = start_run_metrics_thread(
+            dagster_run,
+        )
+    else:
+        metrics_thread, metrics_thread_shutdown_event = None, None
+
     recon_job = recon_job_from_origin(cast(JobPythonOrigin, dagster_run.job_code_origin))
 
     pid = os.getpid()
@@ -224,6 +254,11 @@ def _resume_run_command_body(
         # relies on core_execute_run writing failures to the event log before raising
         run_worker_failed = True
     finally:
+        if metrics_thread and metrics_thread_shutdown_event:
+            stopped = stop_run_metrics_thread(metrics_thread, metrics_thread_shutdown_event)
+            if not stopped:
+                instance.report_engine_event("Metrics thread did not shutdown properly")
+
         if instance.should_start_background_run_thread:
             cancellation_thread_shutdown_event = check.not_none(cancellation_thread_shutdown_event)
             cancellation_thread = check.not_none(cancellation_thread)
