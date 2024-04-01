@@ -111,8 +111,8 @@ class ContainerUtilizationMetrics(TypedDict):
 
 def retrieve_containerized_utilization_metrics(
     logger: Optional[logging.Logger],
-    previous_measurement_timestamp: Optional[float],
-    previous_cpu_usage: Optional[float],
+    previous_measurement_timestamp: Optional[float] = None,
+    previous_cpu_usage: Optional[float] = None,
 ) -> ContainerUtilizationMetrics:
     """Retrieve the CPU and memory utilization metrics from cgroup and proc files."""
     cgroup_version = _retrieve_cgroup_version(logger)

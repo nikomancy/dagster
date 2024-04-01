@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Mapping, Optional, Sequence, Set, Tuple, Union
 
+from dagster._core.execution.types import RunTelemetryData
 from typing_extensions import TypedDict
 
 from dagster._core.events import DagsterEvent
@@ -352,6 +353,10 @@ class RunStorage(ABC, MayHaveInstanceWeakref[T_DagsterInstance], DaemonCursorSto
     @abstractmethod
     def get_daemon_heartbeats(self) -> Mapping[str, DaemonHeartbeat]:
         """Latest heartbeats of all daemon types."""
+
+    def add_run_telemetry(self, run_id: str, run_telemetry: RunTelemetryData) -> None:
+        """Not implemented in base class. Should be implemented in subclasses that support telemetry."""
+        pass
 
     @abstractmethod
     def wipe_daemon_heartbeats(self) -> None:
