@@ -15,7 +15,7 @@ from dagster._utils.container import (
     retrieve_containerized_utilization_metrics,
 )
 
-RUN_METRICS_POLL_INTERVAL_SECONDS = 5
+RUN_METRICS_POLL_INTERVAL_SECONDS = 60
 
 
 def _get_platform_name() -> str:
@@ -65,25 +65,26 @@ def _get_container_metrics(logger: Optional[logging.Logger] = None) -> Dict[str,
     metrics = retrieve_containerized_utilization_metrics(logger=logger)
 
     # calculate cpu_limit
-    cpu_quota = metrics.get("cpu_cfs_quota_us")
-    cpu_period = metrics.get("cpu_cfs_period_us")
-    cpu_limit = None
-    if cpu_quota > 0 and cpu_period > 0:
-        cpu_limit = cpu_quota / cpu_period
+    cpu_quota_us = metrics.get("cpu_cfs_quota_us")
+    cpu_period_us = metrics.get("cpu_cfs_period_us")
+    cpu_usage_ms = metrics.get("cpu_usage")
+    cpu_limit_ms = None
+    if cpu_quota_us > 0 and cpu_period_us > 0:
+        cpu_limit_ms = (cpu_quota_us / cpu_period_us) * 1000
 
     cpu_percent = None
-    if cpu_limit > 0 and metrics.get("cpu_usage") > 0:
-        cpu_percent = 100.0 * metrics.get("cpu_usage") / cpu_limit
+    if cpu_limit_ms > 0 and cpu_usage_ms > 0:
+        cpu_percent = 100.0 * cpu_usage_ms / cpu_limit_ms
 
     memory_percent = None
     if metrics.get("memory_limit") > 0 and metrics.get("memory_usage") > 0:
         memory_percent = 100.0 * metrics.get("memory_usage") / metrics.get("memory_limit")
 
     return {
-        "container.cpu_usage": metrics.get("cpu_usage"),
+        "container.cpu_usage_ms": metrics.get("cpu_usage"),
         "container.cpu_cfs_period_us": metrics.get("cpu_cfs_period_us"),
         "container.cpu_cfs_quota_us": metrics.get("cpu_cfs_quota_us"),
-        "container.cpu_limit": cpu_limit,
+        "container.cpu_limit_ms": cpu_limit_ms,
         "container.cpu_percent": cpu_percent,
         "container.memory_usage": metrics.get("memory_usage"),
         "container.memory_limit": metrics.get("memory_limit"),
@@ -114,14 +115,33 @@ def _report_run_metrics(
         run_tags: Dict[str, str],
         logger: Optional[logging.Logger] = None
 ):
-    cpu_str = f"{metrics.get('container.cpu_usage')}ms ({metrics.get('container.cpu_percent')}%)"
-    mem_str = f"{metrics.get('container.memory_usage')}b ({metrics.get('container.memory_percent')}%)"
+    cpu_usage_str = f"{metrics.get('container.cpu_usage_ms')} ms/sec" # ({metrics.get('container.cpu_percent'):.2f}%)"
+    memory_usage_str = f"{metrics.get('container.memory_usage') / 1048576:.2f} MiB" # ({metrics.get('container.memory_percent'):.2f}%)"
+
+    usage_percentage_strings = []
+    if metrics.get("container.cpu_percent") is not None:
+        usage_percentage_strings.append(f"CPU: {metrics.get('container.cpu_percent'):.2f} %")
+    if metrics.get("container.memory_percent") is not None:
+        usage_percentage_strings.append(f"MEMORY: {metrics.get('container.memory_percent'):.2f} %")
+
+    message = f"Container resource usage [CPU: {cpu_usage_str}, MEMORY: {memory_usage_str}]"
+
+    if len(usage_percentage_strings) > 0:
+        message += f"[{', '.join(usage_percentage_strings)}]"
 
     instance.report_engine_event(
-        f"Run container metrics [CPU {cpu_str}), MEM {mem_str}]",
+        message=message,
         dagster_run=dagster_run,
         run_id=dagster_run.run_id,
     )
+
+    if metrics.get("container.memory_percent") > 75:
+        gc_metrics = {key: value for key, value in metrics.items() if key.startswith("gc_")}
+        instance.report_engine_event(
+            message=f"Python garbage collection metrics: {gc_metrics}",
+            dagster_run=dagster_run,
+            run_id=dagster_run.run_id,
+        )
 
 
 def _capture_metrics(
@@ -138,7 +158,7 @@ def _capture_metrics(
     check.bool_param(container_metrics_enabled, "container_metrics_enabled")
     check.bool_param(python_metrics_enabled, "python_metrics_enabled")
     check.inst_param(shutdown_event, "shutdown_event", threading.Event)
-    check.opt_int_param(shutdown_event, "shutdown_event")
+    check.opt_int_param(polling_interval, "polling_interval")
     check.opt_inst_param(logger, "logger", logging.Logger)
 
     if not (container_metrics_enabled or python_metrics_enabled):
@@ -148,7 +168,7 @@ def _capture_metrics(
     run_tags = _metric_tags(instance, dagster_run)
 
     if logger:
-        logging.info(f"Starting metrics capture thread with tags: {run_tags}")
+        logging.debug(f"Starting metrics capture thread with tags: {run_tags}")
         logging.debug(f"  [container_metrics_enabled={container_metrics_enabled}]")
         logging.debug(f"  [python_metrics_enabled={python_metrics_enabled}]")
 
@@ -180,6 +200,8 @@ def _capture_metrics(
             return False  # terminate the thread safely without interrupting the main thread
 
         sleep(polling_interval)
+    if logger:
+        logging.debug("Shutting down metrics capture thread")
     return True
 
 
@@ -202,7 +224,7 @@ def start_run_metrics_thread(
     assert container_metrics_enabled or python_metrics_enabled, "No metrics enabled"
 
     if logger:
-        logger.info("Starting run metrics thread")
+        logger.debug("Starting run metrics thread")
 
     instance.report_engine_event(
         f"Starting run metrics thread with container_metrics_enabled={container_metrics_enabled} and python_metrics_enabled={python_metrics_enabled}",

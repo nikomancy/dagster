@@ -113,13 +113,13 @@ def _execute_run_command_body(
 
     start_metric_thread = _should_start_metrics_thread(dagster_run)
     instance.report_engine_event(
-        f"Should start metrics thread for run {run_id}.",
+        f"Should start metrics thread for run {run_id}: {start_metric_thread}",
         dagster_run,
     )
-    if start_metric_thread:
 
+    if start_metric_thread:
         metrics_thread, metrics_thread_shutdown_event = start_run_metrics_thread(
-            instance, dagster_run,
+            instance, dagster_run, logger=logging.getLogger().setLevel(logging.DEBUG), polling_interval=15
         )
     else:
         metrics_thread, metrics_thread_shutdown_event = None, None
