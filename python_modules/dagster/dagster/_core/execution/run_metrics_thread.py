@@ -6,9 +6,10 @@ import threading
 from datetime import datetime
 from sys import platform
 from time import sleep
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 
 import dagster._check as check
+from dagster._core.execution.types import RunTelemetryData, TelemetryDataPoint
 from dagster._core.instance import DagsterInstance
 from dagster._core.storage.dagster_run import DagsterRun
 from dagster._utils.container import (
@@ -128,6 +129,29 @@ def _report_run_metrics(
 
     if len(usage_percentage_strings) > 0:
         message += f"[{', '.join(usage_percentage_strings)}]"
+
+    datapoints: List[TelemetryDataPoint] = []
+    for metric, value in metrics.items():
+        try:
+            datapoint = TelemetryDataPoint(
+                name=metric,
+                value=float(value),
+                timestamp=measurement_time.timestamp()
+            )
+            datapoints.append(datapoint)
+        except ValueError:
+            logging.warning(f"Failed to convert metric value to float: {metric}={value}, skipping")
+
+    telemetry_data = RunTelemetryData(
+        run_id=dagster_run.run_id,
+        deployment="staging",
+        datapoints=datapoints
+    )
+
+    instance._run_storage.add_run_telemetry(  # noqa: SLF001
+        telemetry_data,
+        tags={"foo": "bar"}
+    )
 
     instance.report_engine_event(
         message=message,

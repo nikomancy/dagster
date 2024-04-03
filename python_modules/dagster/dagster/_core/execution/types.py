@@ -51,6 +51,6 @@ class RunTelemetryData(
         return super(RunTelemetryData, cls).__new__(
             cls,
             run_id=check.str_param(run_id, "run_id"),
-            deployment=check.str_param(run_id, "run_id"),
+            deployment=check.str_param(deployment, "deployment"),
             datapoints=datapoints
         )
