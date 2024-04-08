@@ -9,7 +9,6 @@ class TelemetryDataPoint(
     NamedTuple(
         "_TelemetryDataPoint",
         [
-            ("timestamp", float),
             ("name", str),
             ("value", float)
         ]
@@ -17,13 +16,11 @@ class TelemetryDataPoint(
 ):
     def __new__(
             cls,
-            timestamp: float,
             name: str,
             value: float
     ):
         return super(TelemetryDataPoint, cls).__new__(
             cls,
-            timestamp=check.float_param(timestamp, "timestamp"),
             name=check.str_param(name, "name"),
             value=check.float_param(value, "value")
         )
@@ -35,7 +32,6 @@ class RunTelemetryData(
         "_RunTelemetryData",
         [
             ("run_id", str),
-            ("deployment", str),
             ("datapoints", List[TelemetryDataPoint]),
         ]
     )
@@ -43,7 +39,6 @@ class RunTelemetryData(
     def __new__(
         cls,
         run_id: str,
-        deployment: str,
         datapoints: List[TelemetryDataPoint]
     ):
         check.list_param(datapoints, "datapoints", of_type=TelemetryDataPoint)
@@ -51,6 +46,5 @@ class RunTelemetryData(
         return super(RunTelemetryData, cls).__new__(
             cls,
             run_id=check.str_param(run_id, "run_id"),
-            deployment=check.str_param(deployment, "deployment"),
             datapoints=datapoints
         )

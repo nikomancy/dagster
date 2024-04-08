@@ -3,10 +3,9 @@ import logging
 import os
 import os.path
 import threading
-from datetime import datetime
 from sys import platform
 from time import sleep
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, List, Optional, Tuple
 
 import dagster._check as check
 from dagster._core.execution.types import RunTelemetryData, TelemetryDataPoint
@@ -16,7 +15,8 @@ from dagster._utils.container import (
     retrieve_containerized_utilization_metrics,
 )
 
-RUN_METRICS_POLL_INTERVAL_SECONDS = 60
+RUN_METRICS_POLL_INTERVAL_SECONDS = 30
+RUN_METRICS_SHUTDOWN_SECONDS = RUN_METRICS_POLL_INTERVAL_SECONDS + 5
 
 
 def _get_platform_name() -> str:
@@ -41,25 +41,18 @@ def _process_is_containerized() -> bool:
 
 
 def _metric_tags(instance: DagsterInstance, dagster_run: DagsterRun) -> Dict[str, str]:
-    # TODO - organization name, deployment name, etc.
-    org_name = "mlarose"
-    deployment_name = "test"
-    location_name = "test"
+    location_name = os.getenv("DAGSTER_CLOUD_LOCATION_NAME", None)
 
-    # unique server name ??
-    hostname = os.getenv("HOSTNAME", "unknown")
-
-    return {
-        "deployment_name": deployment_name,
-        "hostname": hostname,
+    # organization and deployment name are added by the graphql mutation
+    tags = {
         "job_name": dagster_run.job_name,
-        "job_origin_id": dagster_run.job_code_origin,
+        "job_origin": dagster_run.job_code_origin,
         "location_name": location_name,
-        "org_name": org_name,
-        # "job_origin_id": dagster_run.job_origin_id,
-        # "repository_name": dagster_run.repository_name,
-        "run_id": dagster_run.run_id
+        "repository_name": dagster_run.repository_name,
+        "run_id": dagster_run.run_id,
     }
+    # filter out none values
+    return {k: v for k, v in tags.items() if v is not None}
 
 
 def _get_container_metrics(logger: Optional[logging.Logger] = None) -> Dict[str, float]:
@@ -107,17 +100,41 @@ def _get_python_runtime_metrics() -> Dict[str, float]:
     }
 
 
-def _report_run_metrics(
+def _report_run_metrics_graphql(
         instance: DagsterInstance,
         dagster_run: DagsterRun,
-        start_time: datetime,
-        measurement_time: datetime,
         metrics: Dict[str, float],
         run_tags: Dict[str, str],
-        logger: Optional[logging.Logger] = None
 ):
-    cpu_usage_str = f"{metrics.get('container.cpu_usage_ms')} ms/sec" # ({metrics.get('container.cpu_percent'):.2f}%)"
-    memory_usage_str = f"{metrics.get('container.memory_usage') / 1048576:.2f} MiB" # ({metrics.get('container.memory_percent'):.2f}%)"
+    datapoints: List[TelemetryDataPoint] = []
+    for metric, value in metrics.items():
+        try:
+            datapoint = TelemetryDataPoint(
+                name=metric,
+                value=float(value),
+            )
+            datapoints.append(datapoint)
+        except ValueError:
+            logging.warning(f"Failed to convert metric value to float: {metric}={value}, skipping")
+
+    telemetry_data = RunTelemetryData(
+        run_id=dagster_run.run_id,
+        datapoints=datapoints
+    )
+
+    instance._run_storage.add_run_telemetry(  # noqa: SLF001
+        telemetry_data,
+        tags=run_tags
+    )
+
+
+def _report_run_metrics_engine_event(
+        instance: DagsterInstance,
+        dagster_run: DagsterRun,
+        metrics: Dict[str, float],
+):
+    cpu_usage_str = f"{metrics.get('container.cpu_usage_ms')} ms/sec"
+    memory_usage_str = f"{metrics.get('container.memory_usage') / 1048576:.2f} MiB"
 
     usage_percentage_strings = []
     if metrics.get("container.cpu_percent") is not None:
@@ -130,42 +147,11 @@ def _report_run_metrics(
     if len(usage_percentage_strings) > 0:
         message += f"[{', '.join(usage_percentage_strings)}]"
 
-    datapoints: List[TelemetryDataPoint] = []
-    for metric, value in metrics.items():
-        try:
-            datapoint = TelemetryDataPoint(
-                name=metric,
-                value=float(value),
-                timestamp=measurement_time.timestamp()
-            )
-            datapoints.append(datapoint)
-        except ValueError:
-            logging.warning(f"Failed to convert metric value to float: {metric}={value}, skipping")
-
-    telemetry_data = RunTelemetryData(
-        run_id=dagster_run.run_id,
-        deployment="staging",
-        datapoints=datapoints
-    )
-
-    instance._run_storage.add_run_telemetry(  # noqa: SLF001
-        telemetry_data,
-        tags={"foo": "bar"}
-    )
-
     instance.report_engine_event(
         message=message,
         dagster_run=dagster_run,
         run_id=dagster_run.run_id,
     )
-
-    if metrics.get("container.memory_percent") > 75:
-        gc_metrics = {key: value for key, value in metrics.items() if key.startswith("gc_")}
-        instance.report_engine_event(
-            message=f"Python garbage collection metrics: {gc_metrics}",
-            dagster_run=dagster_run,
-            run_id=dagster_run.run_id,
-        )
 
 
 def _capture_metrics(
@@ -175,7 +161,8 @@ def _capture_metrics(
         python_metrics_enabled: bool,
         shutdown_event: threading.Event,
         polling_interval: Optional[int] = RUN_METRICS_POLL_INTERVAL_SECONDS,
-        logger: Optional[logging.Logger] = None
+        logger: Optional[logging.Logger] = None,
+        report_container_metrics_as_engine_events: Optional[bool] = False
 ) -> bool:
     check.inst_param(instance, "instance", DagsterInstance)
     check.inst_param(dagster_run, "dagster_run", DagsterRun)
@@ -184,11 +171,11 @@ def _capture_metrics(
     check.inst_param(shutdown_event, "shutdown_event", threading.Event)
     check.opt_int_param(polling_interval, "polling_interval")
     check.opt_inst_param(logger, "logger", logging.Logger)
+    check.opt_bool_param(report_container_metrics_as_engine_events, "report_container_metrics_as_engine_events")
 
     if not (container_metrics_enabled or python_metrics_enabled):
         raise ValueError("No metrics enabled")
 
-    start_time = datetime.now()
     run_tags = _metric_tags(instance, dagster_run)
 
     if logger:
@@ -200,7 +187,6 @@ def _capture_metrics(
         try:
             metrics = {}
 
-            measurement_time = datetime.now()
             if container_metrics_enabled:
                 container_metrics = _get_container_metrics(logger=logger)
                 metrics.update(container_metrics)
@@ -210,16 +196,21 @@ def _capture_metrics(
                 metrics.update(python_metrics)
 
             if len(metrics) > 0:
-                _report_run_metrics(
+                _report_run_metrics_graphql(
                     instance,
                     dagster_run=dagster_run,
-                    start_time=start_time,
-                    measurement_time=measurement_time,
                     metrics=metrics,
                     run_tags=run_tags,
-                    logger=logger
                 )
-        except:  # noqa: E722
+
+            if container_metrics_enabled and report_container_metrics_as_engine_events:
+                _report_run_metrics_engine_event(
+                    instance,
+                    dagster_run,
+                    metrics
+                )
+
+        except:
             logging.error("Exception during capture of metrics, will cease capturing for this run", exc_info=True)
             return False  # terminate the thread safely without interrupting the main thread
 
@@ -232,6 +223,8 @@ def _capture_metrics(
 def start_run_metrics_thread(
         instance: DagsterInstance,
         dagster_run: DagsterRun,
+        container_metrics_enabled: Optional[bool] = True,
+        python_metrics_enabled: Optional[bool] = False,
         logger: Optional[logging.Logger] = None,
         polling_interval: Optional[int] = None
 ) -> Tuple[threading.Thread, threading.Event]:
@@ -240,9 +233,7 @@ def start_run_metrics_thread(
     check.opt_inst_param(logger, "logger", logging.Logger)
     check.opt_int_param(polling_interval, "polling_interval")
 
-    # TODO - some feature flagging here
-    container_metrics_enabled = _process_is_containerized()
-    python_metrics_enabled = True
+    container_metrics_enabled = container_metrics_enabled and _process_is_containerized()
 
     # TODO - ensure at least one metrics source is enabled
     assert container_metrics_enabled or python_metrics_enabled, "No metrics enabled"
@@ -251,7 +242,8 @@ def start_run_metrics_thread(
         logger.debug("Starting run metrics thread")
 
     instance.report_engine_event(
-        f"Starting run metrics thread with container_metrics_enabled={container_metrics_enabled} and python_metrics_enabled={python_metrics_enabled}",
+        f"Starting run metrics thread with container_metrics_enabled={container_metrics_enabled} and "
+        f"python_metrics_enabled={python_metrics_enabled}",
         dagster_run=dagster_run,
         run_id=dagster_run.run_id,
     )
@@ -259,7 +251,15 @@ def start_run_metrics_thread(
     shutdown_event = threading.Event()
     thread = threading.Thread(
         target=_capture_metrics,
-        args=(instance, dagster_run, container_metrics_enabled, python_metrics_enabled, shutdown_event, polling_interval, logger),
+        args=(
+            instance,
+            dagster_run,
+            container_metrics_enabled,
+            python_metrics_enabled,
+            shutdown_event,
+            polling_interval,
+            logger
+        ),
         name="run-metrics",
     )
     thread.start()
@@ -269,7 +269,7 @@ def start_run_metrics_thread(
 def stop_run_metrics_thread(
         thread: threading.Thread,
         stop_event: threading.Event,
-        timeout: Optional[int] = RUN_METRICS_POLL_INTERVAL_SECONDS
+        timeout: Optional[int] = RUN_METRICS_SHUTDOWN_SECONDS
 ) -> bool:
     thread = check.not_none(thread)
     stop_event = check.not_none(stop_event)
