@@ -15,8 +15,8 @@ from dagster._utils.container import (
     retrieve_containerized_utilization_metrics,
 )
 
-RUN_METRICS_POLL_INTERVAL_SECONDS = 30
-RUN_METRICS_SHUTDOWN_SECONDS = RUN_METRICS_POLL_INTERVAL_SECONDS + 5
+DEFAULT_RUN_METRICS_POLL_INTERVAL_SECONDS = 30
+DEFAULT_RUN_METRICS_SHUTDOWN_SECONDS = 60
 
 
 def _get_platform_name() -> str:
@@ -46,9 +46,7 @@ def _metric_tags(instance: DagsterInstance, dagster_run: DagsterRun) -> Dict[str
     # organization and deployment name are added by the graphql mutation
     tags = {
         "job_name": dagster_run.job_name,
-        "job_origin": dagster_run.job_code_origin,
         "location_name": location_name,
-        "repository_name": dagster_run.repository_name,
         "run_id": dagster_run.run_id,
     }
     # filter out none values
@@ -63,25 +61,30 @@ def _get_container_metrics(logger: Optional[logging.Logger] = None) -> Dict[str,
     cpu_period_us = metrics.get("cpu_cfs_period_us")
     cpu_usage_ms = metrics.get("cpu_usage")
     cpu_limit_ms = None
-    if cpu_quota_us > 0 and cpu_period_us > 0:
-        cpu_limit_ms = (cpu_quota_us / cpu_period_us) * 1000
+    if cpu_quota_us and cpu_quota_us > 0 and cpu_period_us and cpu_period_us > 0:
+        # Why the 1000 factor is a bit counterintuitive:
+        # quota / period -> fraction of cpu per unit of time
+        # 1000 * quota / period -> ms/sec of cpu
+        cpu_limit_ms = (1000.0 * cpu_quota_us) / cpu_period_us
 
     cpu_percent = None
-    if cpu_limit_ms > 0 and cpu_usage_ms > 0:
+    if cpu_limit_ms and cpu_limit_ms > 0 and cpu_usage_ms and cpu_usage_ms > 0:
         cpu_percent = 100.0 * cpu_usage_ms / cpu_limit_ms
 
     memory_percent = None
-    if metrics.get("memory_limit") > 0 and metrics.get("memory_usage") > 0:
-        memory_percent = 100.0 * metrics.get("memory_usage") / metrics.get("memory_limit")
+    memory_limit = metrics.get("memory_limit")
+    memory_usage = metrics.get("memory_usage")
+    if memory_limit and memory_limit > 0 and memory_usage and memory_usage > 0:
+        memory_percent = 100.0 * memory_usage / memory_limit
 
     return {
-        "container.cpu_usage_ms": metrics.get("cpu_usage"),
-        "container.cpu_cfs_period_us": metrics.get("cpu_cfs_period_us"),
-        "container.cpu_cfs_quota_us": metrics.get("cpu_cfs_quota_us"),
+        "container.cpu_usage_ms": cpu_usage_ms,
+        "container.cpu_cfs_period_us": cpu_period_us,
+        "container.cpu_cfs_quota_us": cpu_quota_us,
         "container.cpu_limit_ms": cpu_limit_ms,
         "container.cpu_percent": cpu_percent,
-        "container.memory_usage": metrics.get("memory_usage"),
-        "container.memory_limit": metrics.get("memory_limit"),
+        "container.memory_usage": memory_usage,
+        "container.memory_limit": memory_limit,
         "container.memory_percent": memory_percent,
     }
 
@@ -90,13 +93,13 @@ def _get_python_runtime_metrics() -> Dict[str, float]:
     gc_stats = gc.get_stats()
 
     stats_dict = {}
-    for generation in gc_stats:
-        gen_dict = {f"gc_gen{generation}_{key}": value for key, value in generation.items()}
-        stats_dict.update(gen_dict)
+    for index, gen_dict in enumerate(gc_stats):
+        gen_metrics = {f"python.runtime.gc_gen_{index}.{key}": value for key, value in gen_dict.items()}
+        stats_dict.update(gen_metrics)
 
     return {
         **stats_dict,
-        "gc_freeze_count": gc.get_freeze_count()
+        "python.runtime.gc_freeze_count": gc.get_freeze_count()
     }
 
 
@@ -108,6 +111,8 @@ def _report_run_metrics_graphql(
 ):
     datapoints: List[TelemetryDataPoint] = []
     for metric, value in metrics.items():
+        if value is None:
+            continue
         try:
             datapoint = TelemetryDataPoint(
                 name=metric,
@@ -160,7 +165,7 @@ def _capture_metrics(
         container_metrics_enabled: bool,
         python_metrics_enabled: bool,
         shutdown_event: threading.Event,
-        polling_interval: Optional[int] = RUN_METRICS_POLL_INTERVAL_SECONDS,
+        polling_interval: Optional[int] = DEFAULT_RUN_METRICS_POLL_INTERVAL_SECONDS,
         logger: Optional[logging.Logger] = None,
         report_container_metrics_as_engine_events: Optional[bool] = False
 ) -> bool:
@@ -209,9 +214,8 @@ def _capture_metrics(
                     dagster_run,
                     metrics
                 )
-
         except:
-            logging.error("Exception during capture of metrics, will cease capturing for this run", exc_info=True)
+            logging.error("Exception during capture of metrics, will cease capturing", exc_info=True)
             return False  # terminate the thread safely without interrupting the main thread
 
         sleep(polling_interval)
@@ -226,12 +230,19 @@ def start_run_metrics_thread(
         container_metrics_enabled: Optional[bool] = True,
         python_metrics_enabled: Optional[bool] = False,
         logger: Optional[logging.Logger] = None,
-        polling_interval: Optional[int] = None
+        polling_interval: Optional[int] = None,
+        report_container_metrics_as_engine_events: Optional[bool] = False,
 ) -> Tuple[threading.Thread, threading.Event]:
     check.inst_param(instance, "instance", DagsterInstance)
     check.inst_param(dagster_run, "dagster_run", DagsterRun)
     check.opt_inst_param(logger, "logger", logging.Logger)
+    check.opt_bool_param(container_metrics_enabled, "container_metrics_enabled")
+    check.opt_bool_param(python_metrics_enabled, "python_metrics_enabled")
     check.opt_int_param(polling_interval, "polling_interval")
+    check.opt_bool_param(
+        report_container_metrics_as_engine_events,
+        "report_container_metrics_as_engine_events"
+    )
 
     container_metrics_enabled = container_metrics_enabled and _process_is_containerized()
 
@@ -258,7 +269,8 @@ def start_run_metrics_thread(
             python_metrics_enabled,
             shutdown_event,
             polling_interval,
-            logger
+            logger,
+            report_container_metrics_as_engine_events
         ),
         name="run-metrics",
     )
@@ -269,7 +281,7 @@ def start_run_metrics_thread(
 def stop_run_metrics_thread(
         thread: threading.Thread,
         stop_event: threading.Event,
-        timeout: Optional[int] = RUN_METRICS_SHUTDOWN_SECONDS
+        timeout: Optional[int] = DEFAULT_RUN_METRICS_SHUTDOWN_SECONDS
 ) -> bool:
     thread = check.not_none(thread)
     stop_event = check.not_none(stop_event)
