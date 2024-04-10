@@ -94,20 +94,19 @@ def _get_python_runtime_metrics() -> Dict[str, float]:
 
     stats_dict = {}
     for index, gen_dict in enumerate(gc_stats):
-        gen_metrics = {f"python.runtime.gc_gen_{index}.{key}": value for key, value in gen_dict.items()}
+        gen_metrics = {
+            f"python.runtime.gc_gen_{index}.{key}": value for key, value in gen_dict.items()
+        }
         stats_dict.update(gen_metrics)
 
-    return {
-        **stats_dict,
-        "python.runtime.gc_freeze_count": gc.get_freeze_count()
-    }
+    return {**stats_dict, "python.runtime.gc_freeze_count": gc.get_freeze_count()}
 
 
 def _report_run_metrics_graphql(
-        instance: DagsterInstance,
-        dagster_run: DagsterRun,
-        metrics: Dict[str, float],
-        run_tags: Dict[str, str],
+    instance: DagsterInstance,
+    dagster_run: DagsterRun,
+    metrics: Dict[str, float],
+    run_tags: Dict[str, str],
 ):
     datapoints: List[TelemetryDataPoint] = []
     for metric, value in metrics.items():
@@ -122,21 +121,17 @@ def _report_run_metrics_graphql(
         except ValueError:
             logging.warning(f"Failed to convert metric value to float: {metric}={value}, skipping")
 
-    telemetry_data = RunTelemetryData(
-        run_id=dagster_run.run_id,
-        datapoints=datapoints
-    )
+    telemetry_data = RunTelemetryData(run_id=dagster_run.run_id, datapoints=datapoints)
 
     instance._run_storage.add_run_telemetry(  # noqa: SLF001
-        telemetry_data,
-        tags=run_tags
+        telemetry_data, tags=run_tags
     )
 
 
 def _report_run_metrics_engine_event(
-        instance: DagsterInstance,
-        dagster_run: DagsterRun,
-        metrics: Dict[str, float],
+    instance: DagsterInstance,
+    dagster_run: DagsterRun,
+    metrics: Dict[str, float],
 ):
     cpu_usage_str = f"{metrics.get('container.cpu_usage_ms')} ms/sec"
     memory_usage_str = f"{metrics.get('container.memory_usage') / 1048576:.2f} MiB"
@@ -160,14 +155,14 @@ def _report_run_metrics_engine_event(
 
 
 def _capture_metrics(
-        instance: DagsterInstance,
-        dagster_run: DagsterRun,
-        container_metrics_enabled: bool,
-        python_metrics_enabled: bool,
-        shutdown_event: threading.Event,
-        polling_interval: Optional[int] = DEFAULT_RUN_METRICS_POLL_INTERVAL_SECONDS,
-        logger: Optional[logging.Logger] = None,
-        report_container_metrics_as_engine_events: Optional[bool] = False
+    instance: DagsterInstance,
+    dagster_run: DagsterRun,
+    container_metrics_enabled: bool,
+    python_metrics_enabled: bool,
+    shutdown_event: threading.Event,
+    polling_interval: Optional[int] = DEFAULT_RUN_METRICS_POLL_INTERVAL_SECONDS,
+    logger: Optional[logging.Logger] = None,
+    report_container_metrics_as_engine_events: Optional[bool] = False,
 ) -> bool:
     check.inst_param(instance, "instance", DagsterInstance)
     check.inst_param(dagster_run, "dagster_run", DagsterRun)
@@ -176,7 +171,9 @@ def _capture_metrics(
     check.inst_param(shutdown_event, "shutdown_event", threading.Event)
     check.opt_int_param(polling_interval, "polling_interval")
     check.opt_inst_param(logger, "logger", logging.Logger)
-    check.opt_bool_param(report_container_metrics_as_engine_events, "report_container_metrics_as_engine_events")
+    check.opt_bool_param(
+        report_container_metrics_as_engine_events, "report_container_metrics_as_engine_events"
+    )
 
     if not (container_metrics_enabled or python_metrics_enabled):
         raise ValueError("No metrics enabled")
@@ -209,13 +206,11 @@ def _capture_metrics(
                 )
 
             if container_metrics_enabled and report_container_metrics_as_engine_events:
-                _report_run_metrics_engine_event(
-                    instance,
-                    dagster_run,
-                    metrics
-                )
+                _report_run_metrics_engine_event(instance, dagster_run, metrics)
         except:
-            logging.error("Exception during capture of metrics, will cease capturing", exc_info=True)
+            logging.error(
+                "Exception during capture of metrics, will cease capturing", exc_info=True
+            )
             return False  # terminate the thread safely without interrupting the main thread
 
         sleep(polling_interval)
@@ -225,13 +220,13 @@ def _capture_metrics(
 
 
 def start_run_metrics_thread(
-        instance: DagsterInstance,
-        dagster_run: DagsterRun,
-        container_metrics_enabled: Optional[bool] = True,
-        python_metrics_enabled: Optional[bool] = False,
-        logger: Optional[logging.Logger] = None,
-        polling_interval: Optional[int] = None,
-        report_container_metrics_as_engine_events: Optional[bool] = False,
+    instance: DagsterInstance,
+    dagster_run: DagsterRun,
+    container_metrics_enabled: Optional[bool] = True,
+    python_metrics_enabled: Optional[bool] = False,
+    logger: Optional[logging.Logger] = None,
+    polling_interval: Optional[int] = None,
+    report_container_metrics_as_engine_events: Optional[bool] = False,
 ) -> Tuple[threading.Thread, threading.Event]:
     check.inst_param(instance, "instance", DagsterInstance)
     check.inst_param(dagster_run, "dagster_run", DagsterRun)
@@ -240,8 +235,7 @@ def start_run_metrics_thread(
     check.opt_bool_param(python_metrics_enabled, "python_metrics_enabled")
     check.opt_int_param(polling_interval, "polling_interval")
     check.opt_bool_param(
-        report_container_metrics_as_engine_events,
-        "report_container_metrics_as_engine_events"
+        report_container_metrics_as_engine_events, "report_container_metrics_as_engine_events"
     )
 
     container_metrics_enabled = container_metrics_enabled and _process_is_containerized()
@@ -270,7 +264,7 @@ def start_run_metrics_thread(
             shutdown_event,
             polling_interval,
             logger,
-            report_container_metrics_as_engine_events
+            report_container_metrics_as_engine_events,
         ),
         name="run-metrics",
     )
@@ -279,9 +273,9 @@ def start_run_metrics_thread(
 
 
 def stop_run_metrics_thread(
-        thread: threading.Thread,
-        stop_event: threading.Event,
-        timeout: Optional[int] = DEFAULT_RUN_METRICS_SHUTDOWN_SECONDS
+    thread: threading.Thread,
+    stop_event: threading.Event,
+    timeout: Optional[int] = DEFAULT_RUN_METRICS_SHUTDOWN_SECONDS,
 ) -> bool:
     thread = check.not_none(thread)
     stop_event = check.not_none(stop_event)

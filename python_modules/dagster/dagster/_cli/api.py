@@ -40,9 +40,12 @@ from dagster._utils.hosted_user_process import recon_job_from_origin
 from dagster._utils.interrupts import capture_interrupts, setup_interrupt_handlers
 from dagster._utils.log import configure_loggers
 
+from .._core.execution.run_metrics_thread import (
+    DEFAULT_RUN_METRICS_POLL_INTERVAL_SECONDS,
+    start_run_metrics_thread,
+    stop_run_metrics_thread,
+)
 from .utils import get_instance_for_cli
-from .._core.execution.run_metrics_thread import start_run_metrics_thread, stop_run_metrics_thread, \
-    DEFAULT_RUN_METRICS_POLL_INTERVAL_SECONDS
 
 
 @click.group(name="api", hidden=True)
@@ -101,18 +104,24 @@ def _report_container_metrics_as_engine_events(dagster_run: DagsterRun) -> bool:
     return _truthy_tag_value(dagster_run, "dagster/container_metrics_engine_events")
 
 
-def _metrics_polling_interval(dagster_run: DagsterRun, logger: Optional[logging.Logger] = None) -> int:
+def _metrics_polling_interval(
+    dagster_run: DagsterRun, logger: Optional[logging.Logger] = None
+) -> int:
     try:
-        return int(dagster_run.tags.get(
-            "dagster/run_metrics_polling_interval_seconds",
-            DEFAULT_RUN_METRICS_POLL_INTERVAL_SECONDS
-        ))
+        return int(
+            dagster_run.tags.get(
+                "dagster/run_metrics_polling_interval_seconds",
+                DEFAULT_RUN_METRICS_POLL_INTERVAL_SECONDS,
+            )
+        )
     except ValueError:
         if logger:
-            logger.warning((
-                "Invalid value for dagster/run_metrics_polling_interval_seconds tag."
-                f"Setting metric polling interval to default value: {DEFAULT_RUN_METRICS_POLL_INTERVAL_SECONDS}."
-            ))
+            logger.warning(
+                (
+                    "Invalid value for dagster/run_metrics_polling_interval_seconds tag."
+                    f"Setting metric polling interval to default value: {DEFAULT_RUN_METRICS_POLL_INTERVAL_SECONDS}."
+                )
+            )
         return DEFAULT_RUN_METRICS_POLL_INTERVAL_SECONDS
 
 
@@ -148,7 +157,9 @@ def _execute_run_command_body(
             dagster_run,
             container_metrics_enabled=True,
             python_metrics_enabled=_enable_python_runtime_metrics(dagster_run),
-            report_container_metrics_as_engine_events=_report_container_metrics_as_engine_events(dagster_run),
+            report_container_metrics_as_engine_events=_report_container_metrics_as_engine_events(
+                dagster_run
+            ),
             polling_interval=polling_interval,
             logger=logger,
         )
@@ -264,7 +275,9 @@ def _resume_run_command_body(
             dagster_run,
             container_metrics_enabled=True,
             python_metrics_enabled=_enable_python_runtime_metrics(dagster_run),
-            report_container_metrics_as_engine_events=_report_container_metrics_as_engine_events(dagster_run),
+            report_container_metrics_as_engine_events=_report_container_metrics_as_engine_events(
+                dagster_run
+            ),
             polling_interval=polling_interval,
             logger=logger,
         )

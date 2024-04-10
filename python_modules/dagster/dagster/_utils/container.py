@@ -253,7 +253,9 @@ def _retrieve_containerized_memory_limit_v2(logger: Optional[logging.Logger]) ->
             return int(f.read())
     except:
         if logger:
-            logger.exception("Failed to retrieve memory limit from cgroup. There may be no limit set on the container.")
+            logger.exception(
+                "Failed to retrieve memory limit from cgroup. There may be no limit set on the container."
+            )
         return None
 
 
@@ -329,5 +331,7 @@ def _retrieve_containerized_cpu_cfs_quota_us_v2(
             return float(line.split()[0])
     except:
         if logger:
-            logger.exception("Failed to retrieve CPU quota from cgroup. There might be not limit set on the container.")
+            logger.exception(
+                "Failed to retrieve CPU quota from cgroup. There might be not limit set on the container."
+            )
         return None
