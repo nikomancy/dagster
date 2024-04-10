@@ -24,6 +24,7 @@ self.addEventListener('message', (event) => {
     case 'layoutAssetGraph': {
       const {graphData, opts} = data;
       self.postMessage(layoutAssetGraph(graphData, opts));
+      console.log('layoutAssetGraph done');
     }
   }
 });

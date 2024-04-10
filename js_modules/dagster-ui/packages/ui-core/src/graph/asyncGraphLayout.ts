@@ -4,13 +4,13 @@ import {useEffect, useMemo, useReducer} from 'react';
 import {ILayoutOp, LayoutOpGraphOptions, OpGraphLayout, layoutOpGraph} from './layout';
 import {useFeatureFlags} from '../app/Flags';
 import {asyncMemoize, indexedDBAsyncMemoize} from '../app/Util';
-import {GraphData} from '../asset-graph/Utils';
+import {GraphData, findUnconnectedGraphs} from '../asset-graph/Utils';
 import {AssetGraphLayout, LayoutAssetGraphOptions, layoutAssetGraph} from '../asset-graph/layout';
 
 const ASYNC_LAYOUT_SOLID_COUNT = 50;
 
 // If you're working on the layout logic, set to false so hot-reloading re-computes the layout
-const CACHING_ENABLED = true;
+const CACHING_ENABLED = false;
 
 // Op Graph
 
@@ -74,32 +74,38 @@ const _assetLayoutCacheKey = (graphData: GraphData, opts: LayoutAssetGraphOption
 const getFullAssetLayout = memoize(layoutAssetGraph, _assetLayoutCacheKey);
 
 export const asyncGetFullAssetLayoutIndexDB = indexedDBAsyncMemoize(
-  (graphData: GraphData, opts: LayoutAssetGraphOptions) => {
-    return new Promise<AssetGraphLayout>((resolve) => {
-      const worker = new Worker(new URL('../workers/dagre_layout.worker', import.meta.url));
-      worker.addEventListener('message', (event) => {
-        resolve(event.data);
-        worker.terminate();
-      });
-      worker.postMessage({type: 'layoutAssetGraph', opts, graphData});
-    });
-  },
+  getFullAssetLayoutWebWorker,
   _assetLayoutCacheKey,
 );
 
-const asyncGetFullAssetLayout = asyncMemoize(
-  (graphData: GraphData, opts: LayoutAssetGraphOptions) => {
-    return new Promise<AssetGraphLayout>((resolve) => {
-      const worker = new Worker(new URL('../workers/dagre_layout.worker', import.meta.url));
-      worker.addEventListener('message', (event) => {
+const asyncGetFullAssetLayout = asyncMemoize(getFullAssetLayoutWebWorker, _assetLayoutCacheKey);
+
+function getFullAssetLayoutWebWorker(graphData: GraphData, opts: LayoutAssetGraphOptions) {
+  console.log({graphData, opts});
+  return new Promise<AssetGraphLayout>((resolve) => {
+    const worker = new Worker(new URL('../workers/dagre_layout.worker', import.meta.url));
+
+    const unconnectedGraphs = findUnconnectedGraphs(graphData);
+    const layouts: any[] = [];
+    worker.addEventListener('message', (event) => {
+      if (layouts.length === unconnectedGraphs.length) {
         resolve(event.data);
         worker.terminate();
-      });
+        console.log({layouts});
+      }
+      layouts.push(event.data);
+      if (layouts.length === unconnectedGraphs.length) {
+        console.log('all unconnected graphs laid out', {layouts});
+      }
+    });
+    console.log({unconnectedGraphs});
+    unconnectedGraphs.forEach((graphData) => {
+      console.log('sending', graphData);
       worker.postMessage({type: 'layoutAssetGraph', opts, graphData});
     });
-  },
-  _assetLayoutCacheKey,
-);
+    worker.postMessage({type: 'layoutAssetGraph', opts, graphData});
+  });
+}
 
 // Helper Hooks:
 // - Automatically switch between sync and async loading strategies
